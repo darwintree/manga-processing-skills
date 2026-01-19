@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manga Page Segmentation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        #controls-container {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        button {
+            padding: 8px 16px;
+            font-size: 14px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        button.danger {
+            background-color: #dc3545;
+        }
+
+        button.danger:hover {
+            background-color: #a71d2a;
+        }
+
+        button.secondary {
+            background-color: #6c757d;
+        }
+
+        button.secondary:hover {
+            background-color: #545b62;
+        }
+
+        #canvas-wrapper {
+            flex: 1;
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        .shortcut-hint {
+            font-size: 12px;
+            color: #666;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="controls-container">
+        <button id="save">Save Segmentation</button>
+        <button id="undo" class="secondary">Undo Last</button>
+        <button id="clear" class="danger">Clear All</button>
+        <span class="shortcut-hint">
+            <strong>Controls:</strong> Wheel to Zoom • Alt+Drag to Pan • Drag to Draw • Click object to Edit
+        </span>
+    </div>
+
+    <div id="canvas-wrapper">
+        <canvas id="c"></canvas>
+    </div>
+
+    <script>
+        // Initialize Fabric canvas
+        const canvas = new fabric.Canvas('c', {
+            isDrawingMode: false,
+            selection: true,
+            uniformScaling: false // Allow non-uniform scaling (stretching)
+        });
+
+        let imgObj = null;
+        let isPanning = false;
+        let lastPosX, lastPosY;
+        let isDrawing = false;
+        let origX, origY;
+        let activeRect = null;
+
+        // Resize canvas to fill window
+        function resizeCanvas() {
+            canvas.setWidth(window.innerWidth);
+            canvas.setHeight(window.innerHeight);
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Load Image
+        fabric.Image.fromURL('/image', function (img) {
+            imgObj = img;
+            img.set({
+                selectable: false,
+                evented: false,
+                originX: 'left',
+                originY: 'top',
+                left: 0,
+                top: 0
+            });
+            canvas.add(img);
+            canvas.sendToBack(img);
+
+            // Adjust zoom to fit image
+            const scaleX = window.innerWidth / img.width;
+            const scaleY = window.innerHeight / img.height;
+            const scale = Math.min(scaleX, scaleY) * 0.9;
+
+            canvas.setViewportTransform([scale, 0, 0, scale,
+                (window.innerWidth - img.width * scale) / 2,
+                (window.innerHeight - img.height * scale) / 2]);
+        });
+
+        // --- Zoom ---
+        canvas.on('mouse:wheel', function (opt) {
+            var delta = opt.e.deltaY;
+            var zoom = canvas.getZoom();
+            zoom *= 0.999 ** delta;
+            if (zoom > 20) zoom = 20;
+            if (zoom < 0.01) zoom = 0.01;
+            canvas.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, zoom);
+            opt.e.preventDefault();
+            opt.e.stopPropagation();
+        });
+
+        // --- Pan & Draw ---
+        canvas.on('mouse:down', function (opt) {
+            var evt = opt.e;
+            if (evt.altKey === true) {
+                isPanning = true;
+                canvas.selection = false;
+                lastPosX = evt.clientX;
+                lastPosY = evt.clientY;
+            } else {
+                // Check if we clicked on an existing object
+                if (opt.target) {
+                    return; // Let Fabric handle selection/drag/resize
+                }
+
+                // Start drawing
+                isDrawing = true;
+                var pointer = canvas.getPointer(opt.e);
+                origX = pointer.x;
+                origY = pointer.y;
+
+                activeRect = new fabric.Rect({
+                    left: origX,
+                    top: origY,
+                    originX: 'left',
+                    originY: 'top',
+                    width: 0,
+                    height: 0,
+                    angle: 0,
+                    fill: 'rgba(255, 0, 0, 0.2)',
+                    stroke: 'rgba(255, 0, 0, 0.8)',
+                    strokeWidth: 2 / canvas.getZoom(), // Keep stroke consistent visually
+                    transparentCorners: false,
+                    cornerColor: 'white',
+                    cornerStrokeColor: 'black',
+                    borderColor: 'black',
+                    cornerSize: 8 / canvas.getZoom()
+                });
+                canvas.add(activeRect);
+            }
+        });
+
+        canvas.on('mouse:move', function (opt) {
+            if (isPanning && opt.e) {
+                var e = opt.e;
+                var vpt = canvas.viewportTransform;
+                vpt[4] += e.clientX - lastPosX;
+                vpt[5] += e.clientY - lastPosY;
+                canvas.requestRenderAll();
+                lastPosX = e.clientX;
+                lastPosY = e.clientY;
+            } else if (isDrawing) {
+                var pointer = canvas.getPointer(opt.e);
+                if (origX > pointer.x) {
+                    activeRect.set({ left: Math.abs(pointer.x) });
+                }
+                if (origY > pointer.y) {
+                    activeRect.set({ top: Math.abs(pointer.y) });
+                }
+                activeRect.set({ width: Math.abs(origX - pointer.x) });
+                activeRect.set({ height: Math.abs(origY - pointer.y) });
+                canvas.renderAll();
+            }
+        });
+
+        canvas.on('mouse:up', function (opt) {
+            if (isPanning) {
+                isPanning = false;
+                canvas.selection = true;
+            } else if (isDrawing) {
+                isDrawing = false;
+                activeRect.setCoords();
+                // Remove if too small
+                if (activeRect.width < 5 || activeRect.height < 5) {
+                    canvas.remove(activeRect);
+                }
+                activeRect = null;
+            }
+        });
+
+        // Keep stroke width constant on zoom
+        canvas.on('mouse:wheel', function () {
+            canvas.getObjects().forEach(function (obj) {
+                if (obj.type === 'rect') {
+                    obj.set('strokeWidth', 2 / canvas.getZoom());
+                    obj.set('cornerSize', 8 / canvas.getZoom());
+                }
+            });
+            canvas.renderAll();
+        });
+
+        // --- Controls ---
+
+        // Undo
+        document.getElementById('undo').addEventListener('click', () => {
+            // Get all objects except the background image
+            const objects = canvas.getObjects().filter(o => o !== imgObj);
+            if (objects.length > 0) {
+                canvas.remove(objects[objects.length - 1]);
+            }
+        });
+
+        // Clear
+        document.getElementById('clear').addEventListener('click', () => {
+            if (confirm("Are you sure you want to clear all rectangles?")) {
+                const objects = canvas.getObjects().filter(o => o !== imgObj);
+                objects.forEach(o => canvas.remove(o));
+            }
+        });
+
+        // Save
+        document.getElementById('save').addEventListener('click', () => {
+            // Get all Rect objects
+            const rects = canvas.getObjects().filter(o => o.type === 'rect' && o !== imgObj);
+
+            if (rects.length === 0) {
+                if (!confirm("No rectangles drawn. Save empty segmentation?")) return;
+            }
+
+            const data = rects.map(r => {
+                // Ensure we get standard x, y, w, h independent of transformation
+                // Fabric stores width/height unscaled, and scaleX/scaleY.
+                // We need the bounding box in image coordinates.
+                // Use object properties directly to get World Coordinates.
+                // bounding currentRect returns canvas/screen coordinates which includes zoom.
+                // We want coordinates relative to the original image (World Space).
+                return [
+                    Math.round(r.left),
+                    Math.round(r.top),
+                    Math.round(r.getScaledWidth()),
+                    Math.round(r.getScaledHeight())
+                ];
+            });
+
+            // Sort by Y position (reading order roughly)
+            data.sort((a, b) => a[1] - b[1]);
+
+            fetch('/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            })
+                .then(response => response.json())
+                .then(data => {
+                    alert('Segmentation saved to ' + data.file);
+                    // Optional: window.close(); // Browsers often block this
+                })
+                .catch((error) => {
+                    console.error('Error:', error);
+                    alert('Error saving segmentation');
+                });
+        });
+
+        // Keyboard Shortcuts
+        window.addEventListener('keydown', (e) => {
+            // Delete key to remove selected
+            if (e.key === 'Delete' || e.key === 'Backspace') {
+                const active = canvas.getActiveObjects();
+                if (active.length) {
+                    canvas.discardActiveObject();
+                    active.forEach(obj => {
+                        if (obj !== imgObj) canvas.remove(obj);
+                    });
+                    canvas.requestRenderAll();
+                }
+            }
+
+            // Undo (Ctrl+Z)
+            if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+                const objects = canvas.getObjects().filter(o => o !== imgObj);
+                if (objects.length > 0) {
+                    canvas.remove(objects[objects.length - 1]);
+                }
+            }
+        });
+
+    </script>
+</body>
+
+</html>
